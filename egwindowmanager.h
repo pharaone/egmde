@@ -1,5 +1,5 @@
 /*
- * Copyright © 2016-18 Octopull Ltd.
+ * Copyright © 2016-19 Octopull Ltd.
  *
  * This program is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 3,
@@ -19,69 +19,66 @@
 #ifndef EGMDE_EGWINDOWMANAGER_H
 #define EGMDE_EGWINDOWMANAGER_H
 
-#include <miral/canonical_window_manager.h>
+#include <miral/minimal_window_manager.h>
+
+#include <map>
+#include <vector>
 
 namespace egmde
 {
 using namespace miral;
+class Wallpaper;
+class ShellCommands;
 
-class WindowManagerPolicy : public CanonicalWindowManagerPolicy
+class WindowManagerPolicy :
+    public MinimalWindowManager
 {
 public:
-    using CanonicalWindowManagerPolicy::CanonicalWindowManagerPolicy;
+    WindowManagerPolicy(
+        WindowManagerTools const& tools,
+        Wallpaper& wallpaper,
+        ShellCommands& commands,
+        int const& no_of_workspaces);
 
-    // Switch apps  : Alt+Tab
-    // Switch window: Alt+`
-    // Close window : Alt-F4
-    bool handle_keyboard_event(MirKeyboardEvent const* event) override;
-
-    // Switch apps  : click on the corresponding window
-    // Switch window: click on the corresponding window
-    // Move window  : Alt-leftmousebutton drag
-    bool handle_pointer_event(MirPointerEvent const* event) override;
-
-    // Switch apps  : tap on the corresponding window
-    // Switch window: tap on the corresponding window
-    // Move window  : three finger drag
-    // Resize window: three finger pinch
-    bool handle_touch_event(MirTouchEvent const* event) override;
-
-    Rectangle confirm_placement_on_display(
-        WindowInfo const& window_info, MirWindowState new_state, Rectangle const& new_placement) override;
-
-    void handle_request_drag_and_drop(WindowInfo& window_info) override;
-
-    void handle_request_move(WindowInfo& window_info, MirInputEvent const* input_event) override;
-
-    void handle_request_resize(WindowInfo& window_info, MirInputEvent const* input_event, MirResizeEdge edge) override;
+    void dock_active_window_left();
+    void dock_active_window_right();
+    void toggle_maximized_restored();
+    void workspace_up(bool take_active);
+    void workspace_down(bool take_active);
 
 private:
+    auto place_new_window(ApplicationInfo const& app_info, WindowSpecification const& request_parameters)
+    -> WindowSpecification override;
 
-    // State held for move/resize gesture by pointer
-    enum PointerGesture {
-        pointer_gesture_none,
-        pointer_gesture_moving,
-        pointer_gesture_resizing
-    } pointer_gesture = pointer_gesture_none;
-    MirPointerButton pointer_gesture_button;
-    miral::Window pointer_gesture_window;
-    unsigned pointer_gesture_shift_keys = 0;
-    MirResizeEdge resize_edge = mir_resize_edge_none;
-    Point resize_top_left;
-    Size resize_size;
+    void advise_new_window(const WindowInfo &window_info) override;
 
-    // State held for move/resize gesture by touch
-    int old_touch_pinch_top = 0;
-    int old_touch_pinch_left = 0;
-    int old_touch_pinch_width = 0;
-    int old_touch_pinch_height = 0;
-    bool pinching = false;
+    void advise_delete_app(ApplicationInfo const& application) override;
 
-    void end_touch_gesture();
-    void keep_size_within_limits(
-        WindowInfo const& window_info, Displacement& delta, Width& new_width, Height& new_height) const;
+    void advise_delete_window(const WindowInfo &window_info) override;
 
-    bool begin_pointer_gesture(WindowInfo const& window_info, MirInputEvent const* input_event, PointerGesture gesture);
+    void handle_modify_window(WindowInfo& window_info, WindowSpecification const& modifications) override;
+
+    void advise_adding_to_workspace(std::shared_ptr<Workspace> const& workspace,
+                                    std::vector<Window> const& windows) override;
+
+    bool handle_keyboard_event(MirKeyboardEvent const* event) override;
+
+    void apply_workspace_hidden_to(Window const& window);
+    void apply_workspace_visible_to(Window const& window);
+    void change_active_workspace(std::shared_ptr<Workspace> const& ww,
+                                 std::shared_ptr<Workspace> const& old_active,
+                                 miral::Window const& window);
+
+    bool external_wallpaper = false;
+    Wallpaper* const wallpaper;
+    ShellCommands* const commands;
+
+    using ring_buffer = std::vector<std::shared_ptr<Workspace>>;
+    ring_buffer workspaces;
+    ring_buffer::iterator active_workspace;
+
+private:
+    std::map<std::shared_ptr<miral::Workspace>, miral::Window> workspace_to_active;
 };
 }
 

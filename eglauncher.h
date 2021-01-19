@@ -1,5 +1,5 @@
 /*
- * Copyright © 2016-2018 Octopull Ltd.
+ * Copyright © 2018-2019 Octopull Limited.
  *
  * This program is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 3,
@@ -16,43 +16,55 @@
  * Authored by: Alan Griffiths <alan@octopull.co.uk>
  */
 
-#ifndef EGMDE_EGWALLPAPER_H
-#define EGMDE_EGWALLPAPER_H
+#ifndef EGMDE_LAUNCHER_H
+#define EGMDE_LAUNCHER_H
 
 #include <miral/application.h>
-#include <miral/window.h>
+
+#include <miral/external_client.h>
 
 #include <memory>
 #include <mutex>
-#include <string>
 
 struct wl_display;
 namespace egmde
 {
-class Wallpaper
+class Launcher
 {
 public:
-    void operator()(wl_display* display);
-    void operator()(std::weak_ptr<mir::scene::Session> const& session);
+    Launcher(miral::ExternalClientLauncher& external_client_launcher, std::string const& terminal_cmd);
 
-    auto session() const -> std::shared_ptr<mir::scene::Session>;
+    // These operators are the protocol for an "Internal Client"
+    void operator()(wl_display* display);
+    void operator()(std::weak_ptr<mir::scene::Session> const& session)
+    {
+        std::lock_guard<decltype(mutex)> lock{mutex};
+        weak_session = session;
+    }
+
+    void show();
 
     void stop();
 
-    // Used in initialization to set colour
-    void bottom(std::string const& option);
-    void top(std::string const& option);
+    enum class Mode { wayland, x11, wayland_debug, x11_debug};
+    auto run_app(std::string app, Mode mode) const -> pid_t;
+
+    auto session() const -> std::shared_ptr<mir::scene::Session>
+    {
+        std::lock_guard<decltype(mutex)> lock{mutex};
+        return weak_session.lock();
+    }
+
+    void autostart_apps() const;
 
 private:
+    miral::ExternalClientLauncher& external_client_launcher;
     std::mutex mutable mutex;
     std::weak_ptr<mir::scene::Session> weak_session;
-
-    uint8_t bottom_colour[4] = { 0x0a, 0x24, 0x77, 0xFF };
-    uint8_t top_colour[4] = { 0x00, 0x00, 0x00, 0xFF };
+    std::string const terminal_cmd;
 
     struct Self;
     std::weak_ptr<Self> self;
 };
 }
-
-#endif //EGMDE_EGWALLPAPER_H
+#endif //EGMDE_LAUNCHER_H

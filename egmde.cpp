@@ -1,5 +1,5 @@
 /*
- * Copyright © 2016-2018 Octopull Ltd.
+ * Copyright © 2016-2019 Octopull Ltd.
  *
  * This program is free software: you can redistribute it and/or modify it
  * under the terms of the GNU General Public License version 3,
@@ -18,26 +18,120 @@
 
 #include "egwallpaper.h"
 #include "egwindowmanager.h"
+#include "egshellcommands.h"
+#include "eglauncher.h"
 
+#include <miral/append_event_filter.h>
 #include <miral/command_line_option.h>
+#include <miral/display_configuration_option.h>
 #include <miral/internal_client.h>
+#include <miral/keymap.h>
 #include <miral/runner.h>
 #include <miral/set_window_management_policy.h>
+#include <miral/version.h>
+#include <miral/wayland_extensions.h>
+#include <miral/x11_support.h>
+#include <mir/fatal.h>
+#include <mir/log.h>
+
+#include <boost/filesystem.hpp>
+#include <linux/input.h>
+#include <csignal>
 
 using namespace miral;
 
 int main(int argc, char const* argv[])
 {
+    auto const terminal_cmd = std::string{argv[0]} + "-terminal";
+
     MirRunner runner{argc, argv};
 
     egmde::Wallpaper wallpaper;
 
+    ExternalClientLauncher external_client_launcher;
+    egmde::Launcher launcher{external_client_launcher, terminal_cmd};
+
+    std::set<pid_t> shell_component_pids;
+
+    auto run_apps = [&](std::string const& apps)
+    {
+        for (auto i = begin(apps); i != end(apps); )
+        {
+            auto const j = find(i, end(apps), ':');
+            shell_component_pids.insert(launcher.run_app(std::string{i, j}, egmde::Launcher::Mode::wayland));
+            if ((i = j) != end(apps)) ++i;
+        }
+    };
+
+    // Protocols we're reserving for shell components
+    std::set<std::string> const shell_protocols{
+        WaylandExtensions::zwlr_layer_shell_v1,
+        WaylandExtensions::zxdg_output_manager_v1,
+        WaylandExtensions::zwlr_foreign_toplevel_manager_v1};
+
+    // Protocols that are "experimental" in Mir but we want to allow
+    auto const experimental_protocols = {"zwp_pointer_constraints_v1", "zwp_relative_pointer_manager_v1"};
+
+    WaylandExtensions extensions;
+    auto const supported_protocols = extensions.supported();
+
+    for (auto const& protocol : shell_protocols)
+    {
+        extensions.enable(protocol);
+    }
+
+    for (auto const& protocol : experimental_protocols)
+    {
+        if (supported_protocols.find(protocol) != end(supported_protocols))
+        {
+            extensions.enable(protocol);
+        }
+        else
+        {
+            mir::log_debug("This version of Mir doesn't support the Wayland extension %s", protocol);
+        }
+    }
+
+    extensions.set_filter([&](Application const& app, char const* protocol)
+        {
+            if (shell_protocols.find(protocol) == end(shell_protocols))
+                return true;
+
+            return shell_component_pids.find(pid_of(app)) != end(shell_component_pids);
+        });
+
+    egmde::ShellCommands commands{runner, launcher, terminal_cmd};
+
+    runner.add_stop_callback([&] { for (auto const pid : shell_component_pids) kill(pid, SIGTERM); });
     runner.add_stop_callback([&] { wallpaper.stop(); });
+    runner.add_stop_callback([&] { launcher.stop(); });
+
+    int no_of_workspaces = 1;
+    auto const update_workspaces = [&](int option)
+        {
+            // clamp no_of_workspaces to [1..32]
+            no_of_workspaces = std::min(std::max(option, 1), 32);
+        };
 
     return runner.run_with(
         {
-            CommandLineOption{std::ref(wallpaper), "wallpaper", "Colour of wallpaper RGB", "0x92006a"},
-            StartupInternalClient{"wallpaper", std::ref(wallpaper)},
-            set_window_management_policy<egmde::WindowManagerPolicy>()
+            X11Support{},
+            extensions,
+            display_configuration_options,
+            CommandLineOption{[&](auto& option) { wallpaper.top(option);},
+                              "wallpaper-top",    "Colour of wallpaper RGB", "0x000000"},
+            CommandLineOption{[&](auto& option) { wallpaper.bottom(option);},
+                              "wallpaper-bottom", "Colour of wallpaper RGB", EGMDE_WALLPAPER_BOTTOM},
+            pre_init(CommandLineOption{update_workspaces,
+                              "no-of-workspaces", "Number of workspaces [1..32]", no_of_workspaces}),
+            external_client_launcher,
+            CommandLineOption{run_apps, "shell-components", "Colon separated shell components to launch on startup", ""},
+            CommandLineOption{[&](bool autostart){ if (autostart) launcher.autostart_apps(); },
+                              "shell-enable-autostart", "Autostart apps during startup"},
+            StartupInternalClient{std::ref(wallpaper)},
+            StartupInternalClient{std::ref(launcher)},
+            Keymap{},
+            AppendEventFilter{[&](MirEvent const* e) { return commands.input_event(e); }},
+            set_window_management_policy<egmde::WindowManagerPolicy>(wallpaper, commands, no_of_workspaces)
         });
 }
